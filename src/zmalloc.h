@@ -35,16 +35,20 @@
 #define __xstr(s) __str(s)
 #define __str(s) #s
 
+/*如果定义了google tc malloc库，则HAVE_MALLOC_SIZE=1*/
 #if defined(USE_TCMALLOC)
 #define ZMALLOC_LIB ("tcmalloc-" __xstr(TC_VERSION_MAJOR) "." __xstr(TC_VERSION_MINOR))
 #include <google/tcmalloc.h>
 #if (TC_VERSION_MAJOR == 1 && TC_VERSION_MINOR >= 6) || (TC_VERSION_MAJOR > 1)
+/*有tc malloc库，则HAVE_MALLOC_SIZE=1*/
 #define HAVE_MALLOC_SIZE 1
+/*再定义zmalloc_size函数调用tc_malloc_size*/
 #define zmalloc_size(p) tc_malloc_size(p)
 #else
 #error "Newer version of tcmalloc required"
 #endif
 
+//同理
 #elif defined(USE_JEMALLOC)
 #define ZMALLOC_LIB ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX))
 #include <jemalloc/jemalloc.h>
@@ -55,6 +59,7 @@
 #error "Newer version of jemalloc required"
 #endif
 
+//同理
 #elif defined(__APPLE__)
 #include <malloc/malloc.h>
 #define HAVE_MALLOC_SIZE 1
@@ -77,8 +82,11 @@
 #define HAVE_DEFRAG
 #endif
 
+//根军size大小的字节分配内存，调用malloc函数，返回整个大小
 void *zmalloc(size_t size);
+//调用calloc函数分配size字节大小的内存，返回包含整个大小
 void *zcalloc(size_t size);
+//调用realloc函数
 void *zrealloc(void *ptr, size_t size);
 void *ztrymalloc(size_t size);
 void *ztrycalloc(size_t size);

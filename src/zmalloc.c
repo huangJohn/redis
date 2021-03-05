@@ -47,29 +47,36 @@ void zlibc_free(void *ptr) {
 #include "zmalloc.h"
 #include "atomicvar.h"
 
-#ifdef HAVE_MALLOC_SIZE
+#ifdef HAVE_MALLOC_SIZE/*确认系统是否有自身支持 MALLOC_SIZE 函数*/
+//有，则PREFIX_SIZE=0，自己不维护了
 #define PREFIX_SIZE (0)
 #else
 #if defined(__sun) || defined(__sparc) || defined(__sparc__)
+//如果Solaris系统，则内存块大小计算为 sizeof(long long)
 #define PREFIX_SIZE (sizeof(long long))
 #else
+//否则 计算内存块大小为 sizeof(size_t)
 #define PREFIX_SIZE (sizeof(size_t))
 #endif
 #endif
 
 #if PREFIX_SIZE > 0
+//redis自己维护的，需要自己判断是否有内存溢出
 #define ASSERT_NO_SIZE_OVERFLOW(sz) assert((sz) + PREFIX_SIZE > (sz))
 #else
+//否则，系统库方法判断是否oom
 #define ASSERT_NO_SIZE_OVERFLOW(sz)
 #endif
 
 /* Explicitly override malloc/free etc when using tcmalloc. */
+// 如果用的是tc库，调用tc 函数
 #if defined(USE_TCMALLOC)
 #define malloc(size) tc_malloc(size)
 #define calloc(count,size) tc_calloc(count,size)
 #define realloc(ptr,size) tc_realloc(ptr,size)
 #define free(ptr) tc_free(ptr)
 #elif defined(USE_JEMALLOC)
+//同理
 #define malloc(size) je_malloc(size)
 #define calloc(count,size) je_calloc(count,size)
 #define realloc(ptr,size) je_realloc(ptr,size)
@@ -78,11 +85,17 @@ void zlibc_free(void *ptr) {
 #define dallocx(ptr,flags) je_dallocx(ptr,flags)
 #endif
 
+/*更新分配内存后，原子操作，used_memory更新自增size*/
 #define update_zmalloc_stat_alloc(__n) atomicIncr(used_memory,(__n))
+/*自减*/
 #define update_zmalloc_stat_free(__n) atomicDecr(used_memory,(__n))
 
+//静态变量，使用的内存大小
 static redisAtomic size_t used_memory = 0;
 
+/*
+ * 默认处理oom
+ * */
 static void zmalloc_default_oom(size_t size) {
     fprintf(stderr, "zmalloc: Out of memory trying to allocate %zu bytes\n",
         size);
@@ -94,14 +107,22 @@ static void (*zmalloc_oom_handler)(size_t) = zmalloc_default_oom;
 
 /* Try allocating memory, and return NULL if failed.
  * '*usable' is set to the usable size if non NULL. */
+/*
+ * 尝试向系统申请内存，按照字节大小size指定，调用系统malloc函数
+ * 没有申请成功，返回null，成功则返回内存空间的首地址
+ * size = size + PREFIX_SIZE
+ * PREFIX_SIZE 是 malloc函数多申请的大小，用于记录内存块的大小
+ * */
 void *ztrymalloc_usable(size_t size, size_t *usable) {
     ASSERT_NO_SIZE_OVERFLOW(size);
     void *ptr = malloc(size+PREFIX_SIZE);
 
     if (!ptr) return NULL;
 #ifdef HAVE_MALLOC_SIZE
+    //系统调用获取内存size，再更新全局总量
     size = zmalloc_size(ptr);
     update_zmalloc_stat_alloc(size);
+    //需要返回可用部分，则可用=size大小
     if (usable) *usable = size;
     return ptr;
 #else
@@ -114,14 +135,18 @@ void *ztrymalloc_usable(size_t size, size_t *usable) {
 
 /* Allocate memory or panic */
 void *zmalloc(size_t size) {
+    //null 不需要处理可用部分
     void *ptr = ztrymalloc_usable(size, NULL);
+    //内存申请失败，null，oom异常处理
     if (!ptr) zmalloc_oom_handler(size);
     return ptr;
 }
 
 /* Try allocating memory, and return NULL if failed. */
 void *ztrymalloc(size_t size) {
+    //同上
     void *ptr = ztrymalloc_usable(size, NULL);
+    //尝试malloc，可以是null，无oom处理
     return ptr;
 }
 
@@ -156,16 +181,23 @@ void zfree_no_tcache(void *ptr) {
  * '*usable' is set to the usable size if non NULL. */
 void *ztrycalloc_usable(size_t size, size_t *usable) {
     ASSERT_NO_SIZE_OVERFLOW(size);
+    /*调用系统 calloc 函数，申请1个内存块，初始化0，大小为size+PREFIX_SIZE*/
     void *ptr = calloc(1, size+PREFIX_SIZE);
+    /*申请失败 return null*/
     if (ptr == NULL) return NULL;
 
 #ifdef HAVE_MALLOC_SIZE
+    //如果系统本身有支持的 MALLOC_SIZE 库函数，还需要调用起库size函数，拿到这个内存的大小
     size = zmalloc_size(ptr);
+    //原子更新stat 内存使用增加size大小
     update_zmalloc_stat_alloc(size);
+    //usable需要，给到size大小空间
     if (usable) *usable = size;
+    //succ return
     return ptr;
 #else
     *((size_t*)ptr) = size;
+    //更新内存已用自增size+prefix_size大小
     update_zmalloc_stat_alloc(size+PREFIX_SIZE);
     if (usable) *usable = size;
     return (char*)ptr+PREFIX_SIZE;
@@ -175,6 +207,7 @@ void *ztrycalloc_usable(size_t size, size_t *usable) {
 /* Allocate memory and zero it or panic */
 void *zcalloc(size_t size) {
     void *ptr = ztrycalloc_usable(size, NULL);
+    //失败oom
     if (!ptr) zmalloc_oom_handler(size);
     return ptr;
 }
@@ -198,35 +231,43 @@ void *zcalloc_usable(size_t size, size_t *usable) {
 void *ztryrealloc_usable(void *ptr, size_t size, size_t *usable) {
     ASSERT_NO_SIZE_OVERFLOW(size);
 #ifndef HAVE_MALLOC_SIZE
+    //走系统自带库函数
     void *realptr;
 #endif
     size_t oldsize;
     void *newptr;
 
     /* not allocating anything, just redirect to free. */
-    if (size == 0 && ptr != NULL) {
-        zfree(ptr);
+    if (size == 0 && ptr != NULL) {/*不需要分配*/
+        zfree(ptr);/*原str全free*/
+        //usable记为0
         if (usable) *usable = 0;
         return NULL;
     }
     /* Not freeing anything, just redirect to malloc. */
     if (ptr == NULL)
+        //原str没有，直接分配新的size
         return ztrymalloc_usable(size, usable);
 
 #ifdef HAVE_MALLOC_SIZE
+    //size
     oldsize = zmalloc_size(ptr);
+    //系统调用
     newptr = realloc(ptr,size);
     if (newptr == NULL) {
         if (usable) *usable = 0;
         return NULL;
     }
 
+    //更新减少
     update_zmalloc_stat_free(oldsize);
     size = zmalloc_size(newptr);
+    //再累计新的
     update_zmalloc_stat_alloc(size);
     if (usable) *usable = size;
     return newptr;
 #else
+    //走c系统库
     realptr = (char*)ptr-PREFIX_SIZE;
     oldsize = *((size_t*)realptr);
     newptr = realloc(realptr,size+PREFIX_SIZE);
@@ -260,6 +301,7 @@ void *ztryrealloc(void *ptr, size_t size) {
  * '*usable' is set to the usable size if non NULL. */
 void *zrealloc_usable(void *ptr, size_t size, size_t *usable) {
     ptr = ztryrealloc_usable(ptr, size, usable);
+    //失败oom处理
     if (!ptr && size != 0) zmalloc_oom_handler(size);
     return ptr;
 }
@@ -286,12 +328,18 @@ void zfree(void *ptr) {
 
     if (ptr == NULL) return;
 #ifdef HAVE_MALLOC_SIZE
+    //总量计数减一
     update_zmalloc_stat_free(zmalloc_size(ptr));
+    //系统free
     free(ptr);
 #else
+    //计算得到存储部分
     realptr = (char*)ptr-PREFIX_SIZE;
+    //真正的size
     oldsize = *((size_t*)realptr);
+    //更新统计
     update_zmalloc_stat_free(oldsize+PREFIX_SIZE);
+    //没有调用c库free
     free(realptr);
 #endif
 }
