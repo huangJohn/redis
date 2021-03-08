@@ -33,24 +33,31 @@
 
 /* Node, List, and Iterator are the only data structures used currently. */
 
+/*
+ * redis定义双端链表
+ * */
 typedef struct listNode {
+    //前指针
     struct listNode *prev;
+    //后指针
     struct listNode *next;
+    //值
     void *value;
 } listNode;
 
+//链表迭代器
 typedef struct listIter {
-    listNode *next;
-    int direction;
+    listNode *next;//后指针
+    int direction;//方向
 } listIter;
 
 typedef struct list {
-    listNode *head;
-    listNode *tail;
-    void *(*dup)(void *ptr);
-    void (*free)(void *ptr);
-    int (*match)(void *ptr, void *key);
-    unsigned long len;
+    listNode *head;//头
+    listNode *tail;//尾
+    void *(*dup)(void *ptr);//复制函数
+    void (*free)(void *ptr);//free函数
+    int (*match)(void *ptr, void *key);//match函数
+    unsigned long len;//链表长度
 } list;
 
 /* Functions implemented as macros */
@@ -61,10 +68,14 @@ typedef struct list {
 #define listNextNode(n) ((n)->next)
 #define listNodeValue(n) ((n)->value)
 
+//设置dup函数
 #define listSetDupMethod(l,m) ((l)->dup = (m))
+//free函数
 #define listSetFreeMethod(l,m) ((l)->free = (m))
+//match函数
 #define listSetMatchMethod(l,m) ((l)->match = (m))
 
+//get
 #define listGetDupMethod(l) ((l)->dup)
 #define listGetFreeMethod(l) ((l)->free)
 #define listGetMatchMethod(l) ((l)->match)
