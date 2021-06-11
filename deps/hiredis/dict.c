@@ -64,6 +64,7 @@ static unsigned int dictGenHashFunction(const unsigned char *buf, int len) {
 /* Reset an hashtable already initialized with ht_init().
  * NOTE: This function should only called by ht_destroy(). */
 static void _dictReset(dict *ht) {
+    //重置map
     ht->table = NULL;
     ht->size = 0;
     ht->sizemask = 0;
@@ -72,18 +73,23 @@ static void _dictReset(dict *ht) {
 
 /* Create a new hash table */
 static dict *dictCreate(dictType *type, void *privDataPtr) {
+    /*申请ht内存*/
     dict *ht = hi_malloc(sizeof(*ht));
     if (ht == NULL)
         return NULL;
 
+    /*内存获取成功后，init ht*/
     _dictInit(ht,type,privDataPtr);
     return ht;
 }
 
 /* Initialize the hash table */
 static int _dictInit(dict *ht, dictType *type, void *privDataPtr) {
+    //重置一次ht
     _dictReset(ht);
+    //set type
     ht->type = type;
+    //set privdata
     ht->privdata = privDataPtr;
     return DICT_OK;
 }
@@ -91,49 +97,58 @@ static int _dictInit(dict *ht, dictType *type, void *privDataPtr) {
 /* Expand or create the hashtable */
 static int dictExpand(dict *ht, unsigned long size) {
     dict n; /* the new hashtable */
+    //扩容realsize必须要next最小的2的整数幂
     unsigned long realsize = _dictNextPower(size), i;
 
     /* the size is invalid if it is smaller than the number of
      * elements already inside the hashtable */
     if (ht->used > size)
+        //如果ht已经用了大小>size，error
         return DICT_ERR;
 
     _dictInit(&n, ht->type, ht->privdata);
-    n.size = realsize;
-    n.sizemask = realsize-1;
-    n.table = hi_calloc(realsize,sizeof(dictEntry*));
+    n.size = realsize;/*set real size*/
+    n.sizemask = realsize-1;/*计算掩码*/
+    n.table = hi_calloc(realsize,sizeof(dictEntry*));/*new ht*/
     if (n.table == NULL)
         return DICT_ERR;
 
     /* Copy all the elements from the old to the new table:
      * note that if the old hash table is empty ht->size is zero,
      * so dictExpand just creates an hash table. */
-    n.used = ht->used;
+    n.used = ht->used;/*set already used*/
     for (i = 0; i < ht->size && ht->used > 0; i++) {
         dictEntry *he, *nextHe;
 
-        if (ht->table[i] == NULL) continue;
+        if (ht->table[i] == NULL) continue;/*ht idx上是null，不需要操作*/
 
         /* For each hash entry on this slot... */
-        he = ht->table[i];
+        he = ht->table[i];/*拿到ht位置上的 entry*/
         while(he) {
             unsigned int h;
 
-            nextHe = he->next;
+            nextHe = he->next;/*获取链表指针*/
             /* Get the new element index */
-            h = dictHashKey(ht, he->key) & n.sizemask;
+            h = dictHashKey(ht, he->key) & n.sizemask;/*计算key hash值，然后直接与计算得到新的index，求&计算*/
+            //头插链表
             he->next = n.table[h];
             n.table[h] = he;
+            //ht used --
             ht->used--;
             /* Pass to the next element */
+            //set he to next
             he = nextHe;
         }
     }
+    //assert used = 0
     assert(ht->used == 0);
+    //调用hi redis c库函数free ht结构
     hi_free(ht->table);
 
     /* Remap the new hashtable in the old */
+    //重新指向ht的指针为new ht
     *ht = n;
+    //return ok
     return DICT_OK;
 }
 
@@ -152,6 +167,7 @@ static int dictAdd(dict *ht, void *key, void *val) {
     if (entry == NULL)
         return DICT_ERR;
 
+    //头插
     entry->next = ht->table[index];
     ht->table[index] = entry;
 
@@ -172,10 +188,12 @@ static int dictReplace(dict *ht, void *key, void *val) {
     /* Try to add the element. If the key
      * does not exists dictAdd will succeed. */
     if (dictAdd(ht, key, val) == DICT_OK)
+        //add成功，直接返回了
         return 1;
     /* It already exists, get the entry */
     entry = dictFind(ht, key);
     if (entry == NULL)
+        //没有
         return 0;
 
     /* Free the old value and set the new one */
@@ -185,7 +203,9 @@ static int dictReplace(dict *ht, void *key, void *val) {
      * you want to increment (set), and then decrement (free), and not the
      * reverse. */
     auxentry = *entry;
+    //set new
     dictSetHashVal(ht, entry, val);
+    //free old
     dictFreeEntryVal(ht, &auxentry);
     return 0;
 }
@@ -200,21 +220,28 @@ static int dictDelete(dict *ht, const void *key) {
     h = dictHashKey(ht, key) & ht->sizemask;
     de = ht->table[h];
 
+    //链表操作删除node
     prevde = NULL;
     while(de) {
         if (dictCompareHashKeys(ht,key,de->key)) {
             /* Unlink the element from the list */
             if (prevde)
+                //prev node next指向de next
                 prevde->next = de->next;
             else
+                //没有，ht上的头引用，直接删除头元素
                 ht->table[h] = de->next;
 
+            //free
             dictFreeEntryKey(ht,de);
             dictFreeEntryVal(ht,de);
+            //free de
             hi_free(de);
+            //used --
             ht->used--;
             return DICT_OK;
         }
+        //没找到，prev等于当前，当前再向下找
         prevde = de;
         de = de->next;
     }
@@ -232,24 +259,28 @@ static int _dictClear(dict *ht) {
         if ((he = ht->table[i]) == NULL) continue;
         while(he) {
             nextHe = he->next;
+            //free
             dictFreeEntryKey(ht, he);
             dictFreeEntryVal(ht, he);
+            //free node
             hi_free(he);
             ht->used--;
             he = nextHe;
         }
     }
     /* Free the table and the allocated cache structure */
+    //free table结构
     hi_free(ht->table);
     /* Re-initialize the table */
+    //reset
     _dictReset(ht);
     return DICT_OK; /* never fails */
 }
 
 /* Clear & Release the hash table */
 static void dictRelease(dict *ht) {
-    _dictClear(ht);
-    hi_free(ht);
+    _dictClear(ht);/*先clear元素*/
+    hi_free(ht);/*再free ht结构*/
 }
 
 static dictEntry *dictFind(dict *ht, const void *key) {
@@ -261,9 +292,11 @@ static dictEntry *dictFind(dict *ht, const void *key) {
     he = ht->table[h];
     while(he) {
         if (dictCompareHashKeys(ht, key, he->key))
+            //找到链表上的entry返回
             return he;
         he = he->next;
     }
+    //没有null
     return NULL;
 }
 
@@ -310,20 +343,26 @@ static int _dictExpandIfNeeded(dict *ht) {
     /* If the hash table is empty expand it to the initial size,
      * if the table is "full" double its size. */
     if (ht->size == 0)
+        //ht size = 0, 则扩容默认大小4
         return dictExpand(ht, DICT_HT_INITIAL_SIZE);
     if (ht->used == ht->size)
+        //如果过存储数据大小==ht 总大小，执行扩容, size*2
         return dictExpand(ht, ht->size*2);
     return DICT_OK;
 }
 
 /* Our hash table capability is a power of two */
 static unsigned long _dictNextPower(unsigned long size) {
-    unsigned long i = DICT_HT_INITIAL_SIZE;
+    unsigned long i = DICT_HT_INITIAL_SIZE;/*默认初始4*/
 
-    if (size >= LONG_MAX) return LONG_MAX;
+    if (size >= LONG_MAX) return LONG_MAX;/*size超过了存储限制，取long max*/
+    /*寻找最小的2整数幂，满足2^x > size*/
     while(1) {
         if (i >= size)
+            //满足了
+            //只能是4,8,16,32,64...
             return i;
+        //*2
         i *= 2;
     }
 }
@@ -337,16 +376,22 @@ static int _dictKeyIndex(dict *ht, const void *key) {
 
     /* Expand the hashtable if needed */
     if (_dictExpandIfNeeded(ht) == DICT_ERR)
+        //扩容失败
         return -1;
     /* Compute the key hash value */
+    //位计算key的hash值
     h = dictHashKey(ht, key) & ht->sizemask;
     /* Search if this slot does not already contain the given key */
+    //获取链表
     he = ht->table[h];
     while(he) {
+        //key已经存在了slot上
         if (dictCompareHashKeys(ht, key, he->key))
             return -1;
+        //遍历下去
         he = he->next;
     }
+    //return 新key的hash
     return h;
 }
 

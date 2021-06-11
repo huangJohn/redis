@@ -32,10 +32,13 @@
 #define __INTSET_H
 #include <stdint.h>
 
+/*
+ * redis 整数集合 - 数据结构
+ * */
 typedef struct intset {
-    uint32_t encoding;
-    uint32_t length;
-    int8_t contents[];
+    uint32_t encoding;//32位无符号4字节，定义编码方式
+    uint32_t length;//32位无符号4字节，定义大小
+    int8_t contents[];//8位1个字节，柔性存储数组
 } intset;
 
 intset *intsetNew(void);

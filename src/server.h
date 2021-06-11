@@ -499,11 +499,11 @@ typedef enum {
 /* A redis object, that is a type able to hold a string / list / set */
 
 /* The actual Redis Object */
-#define OBJ_STRING 0    /* String object. */
-#define OBJ_LIST 1      /* List object. */
-#define OBJ_SET 2       /* Set object. */
-#define OBJ_ZSET 3      /* Sorted set object. */
-#define OBJ_HASH 4      /* Hash object. */
+#define OBJ_STRING 0    /* String object. 字符串对象*/
+#define OBJ_LIST 1      /* List object. list对象*/
+#define OBJ_SET 2       /* Set object. set对象*/
+#define OBJ_ZSET 3      /* Sorted set object. zset对象，有序set*/
+#define OBJ_HASH 4      /* Hash object. hash表对象*/
 
 /* The "module" object type is a special one that signals that the object
  * is one directly managed by a Redis module. In this case the value points
@@ -516,8 +516,8 @@ typedef enum {
  * by a 64 bit module type ID, which has a 54 bits module-specific signature
  * in order to dispatch the loading to the right module, plus a 10 bits
  * encoding version. */
-#define OBJ_MODULE 5    /* Module object. */
-#define OBJ_STREAM 6    /* Stream object. */
+#define OBJ_MODULE 5    /* Module object. module obj*/
+#define OBJ_STREAM 6    /* Stream object. stream obj*/
 
 /* Extract encver / signature from a module type ID. */
 #define REDISMODULE_TYPE_ENCVER_BITS 10
@@ -666,11 +666,11 @@ typedef struct RedisModuleDigest {
 #define OBJ_STATIC_REFCOUNT (INT_MAX-1) /* Object allocated in the stack. */
 #define OBJ_FIRST_SPECIAL_REFCOUNT OBJ_STATIC_REFCOUNT
 typedef struct redisObject {
-    unsigned type:4;
-    unsigned encoding:4;
+    unsigned type:4;//无符号int，4bits
+    unsigned encoding:4;//编码方式，无符号int，4bits
     unsigned lru:LRU_BITS; /* LRU time (relative to global lru_clock) or
                             * LFU data (least significant 8 bits frequency
-                            * and most significant 16 bits access time). */
+                            * and most significant 16 bits access time). */ /*24B*/
     int refcount;
     void *ptr;
 } robj;
@@ -705,9 +705,9 @@ typedef struct clientReplyBlock {
  * database. The database number is the 'id' field in the structure. */
 typedef struct redisDb {
     dict *dict;                 /* The keyspace for this DB */
-    dict *expires;              /* Timeout of keys with a timeout set */
-    dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP)*/
-    dict *ready_keys;           /* Blocked keys that received a PUSH */
+    dict *expires;              /* Timeout of keys with a timeout set expires key和对应过期时间是一个字典*/
+    dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP) 等待数据的key*/
+    dict *ready_keys;           /* Blocked keys that received a PUSH 拿到数据的key */
     dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
     int id;                     /* Database ID */
     long long avg_ttl;          /* Average TTL, just for stats */
@@ -847,6 +847,7 @@ typedef struct {
 } user;
 
 /* With multiplexing we need to take per-client state.
+ * 客户端状态记录放在了链表中
  * Clients are taken in a linked list. */
 
 #define CLIENT_ID_AOF (UINT64_MAX) /* Reserved ID for the AOF client. If you
@@ -854,7 +855,7 @@ typedef struct {
                                       -2, ... and so forth. */
 
 typedef struct client {
-    uint64_t id;            /* Client incremental unique ID. */
+    uint64_t id;            /* Client incremental unique ID. 64位无符号整数，客户端自增id*/
     connection *conn;
     int resp;               /* RESP protocol version. Can be 2 or 3. */
     redisDb *db;            /* Pointer to currently SELECTed DB. */
@@ -992,23 +993,33 @@ struct sharedObjectsStruct {
 
 /* ZSETs use a specialized version of Skiplists */
 typedef struct zskiplistNode {
+    //元素是sds
     sds ele;
+    //score得分
     double score;
+    //后退指针，只有第0层有效
     struct zskiplistNode *backward;
     struct zskiplistLevel {
-        struct zskiplistNode *forward;
-        unsigned long span;
+        struct zskiplistNode *forward;//node level数组，标识node在具体level层的前进指针
+        unsigned long span;//span跨度，前进指针和当前node的举例
     } level[];
 } zskiplistNode;
 
+//跳表
 typedef struct zskiplist {
+    //header和tail数组
     struct zskiplistNode *header, *tail;
+    //跳表长度
     unsigned long length;
+    //跳表层高
     int level;
 } zskiplist;
 
+//定义zset结构
 typedef struct zset {
+    //字典
     dict *dict;
+    //跳表
     zskiplist *zsl;
 } zset;
 

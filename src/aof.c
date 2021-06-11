@@ -596,16 +596,20 @@ sds catAppendOnlyExpireAtCommand(sds buf, struct redisCommand *cmd, robj *key, r
     return buf;
 }
 
+//dictid是数据库id号
 void feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int argc) {
     sds buf = sdsempty();
     /* The DB this command was targeting is not the same as the last command
      * we appended. To issue a SELECT command is needed. */
     if (dictid != server.aof_selected_db) {
+        //当前服务器select命令出的db不是函数入参的id号
         char seldb[64];
 
         snprintf(seldb,sizeof(seldb),"%d",dictid);
+        //提示select 切换为aof需要的db id号
         buf = sdscatprintf(buf,"*2\r\n$6\r\nSELECT\r\n$%lu\r\n%s\r\n",
             (unsigned long)strlen(seldb),seldb);
+        //set
         server.aof_selected_db = dictid;
     }
 
@@ -1749,6 +1753,7 @@ void aofClosePipes(void) {
 int rewriteAppendOnlyFileBackground(void) {
     pid_t childpid;
 
+    //有活跃子进程返回error
     if (hasActiveChildProcess()) return C_ERR;
     if (aofCreatePipes() != C_OK) return C_ERR;
     if ((childpid = redisFork(CHILD_TYPE_AOF)) == 0) {
@@ -1789,13 +1794,17 @@ int rewriteAppendOnlyFileBackground(void) {
     return C_OK; /* unreached */
 }
 
+//调用bg rewrite aof 命令
 void bgrewriteaofCommand(client *c) {
     if (server.child_type == CHILD_TYPE_AOF) {
+        //子进程已经在重写aof，block
         addReplyError(c,"Background append only file rewriting already in progress");
     } else if (hasActiveChildProcess()) {
+        //如果后台已经有rdb、aof rewriting操作，标记这次scheduled
         server.aof_rewrite_scheduled = 1;
         addReplyStatus(c,"Background append only file rewriting scheduled");
     } else if (rewriteAppendOnlyFileBackground() == C_OK) {
+        //aof rewrite开启成功
         addReplyStatus(c,"Background append only file rewriting started");
     } else {
         addReplyError(c,"Can't execute an AOF background rewriting. "

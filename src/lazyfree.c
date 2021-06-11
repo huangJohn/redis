@@ -152,8 +152,10 @@ int dbAsyncDelete(redisDb *db, robj *key) {
     /* If the value is composed of a few allocations, to free in a lazy way
      * is actually just slower... So under a certain limit we just free
      * the object synchronously. */
+    //删除的对象entry
     dictEntry *de = dictUnlink(db->dict,key->ptr);
     if (de) {
+        //值对象
         robj *val = dictGetVal(de);
 
         /* Tells the module that the key has been unlinked from the database. */
@@ -170,8 +172,11 @@ int dbAsyncDelete(redisDb *db, robj *key) {
          * through and reach the dictFreeUnlinkedEntry() call, that will be
          * equivalent to just calling decrRefCount(). */
         if (free_effort > LAZYFREE_THRESHOLD && val->refcount == 1) {
+            //删除大小满足了需要lazy free方式
             atomicIncr(lazyfree_objects,1);
+            //bio 后台线上去删除
             bioCreateLazyFreeJob(lazyfreeFreeObject,1, val);
+            //set null
             dictSetVal(db->dict,de,NULL);
         }
     }

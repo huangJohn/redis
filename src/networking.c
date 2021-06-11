@@ -3284,10 +3284,12 @@ void unpauseClients(void) {
     listNode *ln;
     listIter li;
     client *c;
-    
+
+    //状态改变
     server.client_pause_type = CLIENT_PAUSE_OFF;
 
     /* Unblock all of the clients so they are reprocessed. */
+    //获取暂停中的clients，并唤醒它
     listRewind(server.paused_clients,&li);
     while ((ln = listNext(&li)) != NULL) {
         c = listNodeValue(ln);
@@ -3305,8 +3307,10 @@ int areClientsPaused(void) {
  * otherwise. */
 int checkClientPauseTimeoutAndReturnIfPaused(void) {
     if (server.client_pause_end_time < server.mstime) {
+        //没有暂停中,唤醒
         unpauseClients();
     }
+    //暂停中
     return areClientsPaused();
 }
 

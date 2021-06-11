@@ -37,11 +37,17 @@
 /* The Redis HyperLogLog implementation is based on the following ideas:
  *
  * * The use of a 64 bit hash function as proposed in [1], in order to estimate
+ * 论文1中使用64bit的hash值函数来估算基数大小，为了计算估值基数可以大于10^9，每个register桶用了仅仅1个bit
  *   cardinalities larger than 10^9, at the cost of just 1 additional bit per
  *   register.
+ *   采用16384个registers，每个register是6位的，可以达到更大的准确度，这样对每个key总共只需要12K大小存储
+ *   存8bit，需要16K大小存储桶的count值
  * * The use of 16384 6-bit registers for a great level of accuracy, using
  *   a total of 12k per key.
+ *   使用redis 的字符串类型，没有引入新数据结构
  * * The use of the Redis string data type. No new type is introduced.
+ * 不压缩数据，正如在论文1中实现一样，同时算法使用的是原始HyperLogLog算法，在论文2中阐述的算法
+ * 唯一区别是使用了64的hash函数，导致在2^32值附件存在偏差，正如论文1中提及的
  * * No attempt is made to compress the data structure as in [1]. Also the
  *   algorithm used is the original HyperLogLog Algorithm as in [2], with
  *   the only difference that a 64 bit hash function is used, so no correction
@@ -56,13 +62,13 @@
  * Redis uses two representations:
  *
  * 1) A "dense" representation where every entry is represented by
- *    a 6-bit integer.
+ *    a 6-bit integer. - 紧凑存储，每个entry是6bit的整数
  * 2) A "sparse" representation using run length compression suitable
  *    for representing HyperLogLogs with many registers set to 0 in
- *    a memory efficient way.
+ *    a memory efficient way. - 稀疏存储
  *
  *
- * HLL header
+ * HLL header - 头，16字节
  * ===
  *
  * Both the dense and sparse representation have a 16 byte header as follows:
@@ -71,9 +77,9 @@
  * | HYLL | E | N/U | Cardin.  |
  * +------+---+-----+----------+
  *
- * The first 4 bytes are a magic string set to the bytes "HYLL".
- * "E" is one byte encoding, currently set to HLL_DENSE or
- * HLL_SPARSE. N/U are three not used bytes.
+ * The first 4 bytes are a magic string set to the bytes "HYLL". - 前4个字节是魔数 HYLL
+ * "E" is one byte encoding, currently set to HLL_DENSE or - E代表字节编码方式，存储是紧凑还是稀疏
+ * HLL_SPARSE. N/U are three not used bytes. N/U为是预留字节数
  *
  * The "Cardin." field is a 64 bit integer stored in little endian format
  * with the latest cardinality computed that can be reused if the data
@@ -91,7 +97,7 @@
  * The dense representation used by Redis is the following:
  *
  * +--------+--------+--------+------//      //--+
- * |11000000|22221111|33333322|55444444 ....     |
+ * |11000000|22221111|33333322|55444444 ....     | 紧密存储，需要定位桶号（byte偏移）和bit偏移
  * +--------+--------+--------+------//      //--+
  *
  * The 6 bits counters are encoded one after the other starting from the
@@ -103,11 +109,14 @@
  * The sparse representation encodes registers using a run length
  * encoding composed of three opcodes, two using one byte, and one using
  * of two bytes. The opcodes are called ZERO, XZERO and VAL.
+ * 稀疏存储，由ZERO、XZERO、VAL表示
  *
  * ZERO opcode is represented as 00xxxxxx. The 6-bit integer represented
  * by the six bits 'xxxxxx', plus 1, means that there are N registers set
  * to 0. This opcode can represent from 1 to 64 contiguous registers set
  * to the value of 0.
+ * 00xxxxxx，6bit，2^6以内是连续0
+ * 01xxxxxx yyyyyyyy， 14bit，2^14 16384以内连续0
  *
  * XZERO opcode is represented by two bytes 01xxxxxx yyyyyyyy. The 14-bit
  * integer represented by the bits 'xxxxxx' as most significant bits and
@@ -121,6 +130,7 @@
  * To obtain the value and run length, the integers vvvvv and xx must be
  * incremented by one. This opcode can represent values from 1 to 32,
  * repeated from 1 to 4 times.
+ * 1vvvvvxx v表示值，xx表示有几个连续该值，最多4个
  *
  * The sparse representation can't represent registers with a value greater
  * than 32, however it is very unlikely that we find such a register in an
@@ -129,17 +139,17 @@
  * HLL is converted to the dense representation.
  *
  * The sparse representation is purely positional. For example a sparse
- * representation of an empty HLL is just: XZERO:16384.
+ * representation of an empty HLL is just: XZERO:16384. - 稀疏标识空hll数据结构存储
  *
  * An HLL having only 3 non-zero registers at position 1000, 1020, 1021
  * respectively set to 2, 3, 3, is represented by the following three
  * opcodes:
  *
- * XZERO:1000 (Registers 0-999 are set to 0)
- * VAL:2,1    (1 register set to value 2, that is register 1000)
- * ZERO:19    (Registers 1001-1019 set to 0)
- * VAL:3,2    (2 registers set to value 3, that is registers 1020,1021)
- * XZERO:15362 (Registers 1022-16383 set to 0)
+ * XZERO:1000 (Registers 0-999 are set to 0) - 0-999都是0
+ * VAL:2,1    (1 register set to value 2, that is register 1000) - 1000bit是2
+ * ZERO:19    (Registers 1001-1019 set to 0) - 接着下来19位是0
+ * VAL:3,2    (2 registers set to value 3, that is registers 1020,1021) - 1020，1021 是3
+ * XZERO:15362 (Registers 1022-16383 set to 0) - 其余是0
  *
  * In the example the sparse representation used just 7 bytes instead
  * of 12k in order to represent the HLL registers. In general for low
@@ -179,26 +189,46 @@
  * configured via the define server.hll_sparse_max_bytes.
  */
 
+/*
+ * 定义hll结构
+ * */
 struct hllhdr {
+    //前4个字节表示hll 魔数
     char magic[4];      /* "HYLL" */
+    //接着1个字节表示hll 当前的存储方式，紧凑or稀疏
     uint8_t encoding;   /* HLL_DENSE or HLL_SPARSE. */
+    //接着3个字节预留，暂无不使用
     uint8_t notused[3]; /* Reserved for future use, must be zero. */
+    //接着8个字节 缓存hll的基础统计值
     uint8_t card[8];    /* Cached cardinality, little endian. */
+    //接着 registers 桶数组
     uint8_t registers[]; /* Data bytes. */
 };
 
 /* The cached cardinality MSB is used to signal validity of the cached value. */
+/*将缓存置为失效，1*/
+/*
+ * 1000 0000 和card 高位或运算=1，表示需要清除card缓存基数值
+ * */
 #define HLL_INVALIDATE_CACHE(hdr) (hdr)->card[7] |= (1<<7)
-#define HLL_VALID_CACHE(hdr) (((hdr)->card[7] & (1<<7)) == 0)
+#define HLL_VALID_CACHE(hdr) (((hdr)->card[7] & (1<<7)) == 0)/*card高位是0，判断当前基数缓存有效*/
 
+//64位hash值的低14位，用于计算桶的index
 #define HLL_P 14 /* The greater is P, the smaller the error. */
+//hash后高位的50位，00000001.....，计算什么时候出现1，则最大值50
 #define HLL_Q (64-HLL_P) /* The number of bits of the hash value used for
                             determining the number of leading zeros. */
+//2^14 = 16384个桶
 #define HLL_REGISTERS (1<<HLL_P) /* With P=14, 16384 registers. */
+//桶掩码，用于定位桶位置
 #define HLL_P_MASK (HLL_REGISTERS-1) /* Mask to index register. */
+//桶内存储的6bit，因为最大值是50，6bit够了, 2^6=64
 #define HLL_BITS 6 /* Enough to count up to 63 leading zeroes. */
+//63,桶内bit流最大值
 #define HLL_REGISTER_MAX ((1<<HLL_BITS)-1)
+//求hll结构体的大小
 #define HLL_HDR_SIZE sizeof(struct hllhdr)
+//求hll大小=hdr大小+（桶数*6+7）/8
 #define HLL_DENSE_SIZE (HLL_HDR_SIZE+((HLL_REGISTERS*HLL_BITS+7)/8))
 #define HLL_DENSE 0 /* Dense encoding. */
 #define HLL_SPARSE 1 /* Sparse encoding. */
@@ -227,9 +257,11 @@ static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected";
  *
  * Example, we want to access to counter at pos = 1 ("111111" in the
  * illustration above).
+ * 比如，需要获取到1号同存的111111
  *
  * The index of the first byte b0 containing our data is:
  *
+ * 先计算字节偏移
  *  b0 = 6 * pos / 8 = 0
  *
  *   +--------+
@@ -239,9 +271,11 @@ static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected";
  * The position of the first bit (counting from the LSB = 0) in the byte
  * is given by:
  *
+ * 再求得位偏移
  *  fb = 6 * pos % 8 -> 6
  *
  * Right shift b0 of 'fb' bits.
+ * 右移6位
  *
  *   +--------+
  *   |11000000|  <- Initial value of b0
@@ -249,7 +283,7 @@ static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected";
  *   +--------+
  *
  * Left shift b1 of bits 8-fb bits (2 bits)
- *
+ *左移第二字节2位
  *   +--------+
  *   |22221111|  <- Initial value of b1
  *   |22111100|  <- After left shift of 2 bits.
@@ -261,8 +295,8 @@ static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected";
  *   +--------+
  *   |00000011|  <- b0 right shifted
  *   |22111100|  <- b1 left shifted
- *   |22111111|  <- b0 OR b1
- *   |  111111|  <- (b0 OR b1) AND 63, our value.
+ *   |22111111|  <- b0 OR b1 异或
+ *   |  111111|  <- (b0 OR b1) AND 63, our value. 异或后再取掩码与计算得到 正确值1+2+4+8+16+32=63
  *   +--------+
  *
  * We can try with a different example, like pos = 0. In this case
@@ -336,51 +370,84 @@ static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected";
 
 /* Store the value of the register at position 'regnum' into variable 'target'.
  * 'p' is an array of unsigned bytes. */
+/*
+ * 密集存储中找桶的位置
+ *
+ * 11000000|00001111|11111100|110000000|....
+ * 0        1        2
+ * 1*6/8=0字节位
+ * 1*6%8=6第6位开始,右移6位
+ * 下个字节位1，左移2位
+ * 0000 0011 | 0011 1100 = 0011 1111 & 00111111 = 1111111 实际就第1个桶的值 111111 = 63，当然最大是50
+ * regnum=桶号
+ * */
 #define HLL_DENSE_GET_REGISTER(target,p,regnum) do { \
     uint8_t *_p = (uint8_t*) p; \
-    unsigned long _byte = regnum*HLL_BITS/8; \
-    unsigned long _fb = regnum*HLL_BITS&7; \
-    unsigned long _fb8 = 8 - _fb; \
-    unsigned long b0 = _p[_byte]; \
-    unsigned long b1 = _p[_byte+1]; \
-    target = ((b0 >> _fb) | (b1 << _fb8)) & HLL_REGISTER_MAX; \
+    /*字节偏移量，第几个桶*/unsigned long _byte = regnum*HLL_BITS/8; \
+    /*位偏移量，桶内第几位开始*/unsigned long _fb = regnum*HLL_BITS&7; \
+    /*需要移动的位数*/unsigned long _fb8 = 8 - _fb; \
+    /*最后出现的位置*/unsigned long b0 = _p[_byte]; \
+    /*第一个出现的位置*/unsigned long b1 = _p[_byte+1]; \
+    target = ((b0 >> _fb) | (b1 << _fb8)) & HLL_REGISTER_MAX;\
+    /*b0右移位偏移量，b1左移8-前面的差值位数，然后异或再与得带该桶的target值*/                                                     \
 } while(0)
 
 /* Set the value of the register at position 'regnum' to 'val'.
  * 'p' is an array of unsigned bytes. */
+/*
+ * 将val设置到regnum桶中
+ * 桶字节位置的bit偏移fb是否大于2
+ * */
 #define HLL_DENSE_SET_REGISTER(p,regnum,val) do { \
     uint8_t *_p = (uint8_t*) p; \
-    unsigned long _byte = regnum*HLL_BITS/8; \
-    unsigned long _fb = regnum*HLL_BITS&7; \
-    unsigned long _fb8 = 8 - _fb; \
-    unsigned long _v = val; \
-    _p[_byte] &= ~(HLL_REGISTER_MAX << _fb); \
-    _p[_byte] |= _v << _fb; \
-    _p[_byte+1] &= ~(HLL_REGISTER_MAX >> _fb8); \
-    _p[_byte+1] |= _v >> _fb8; \
+    /*找到字节偏移，桶的起始位置*/unsigned long _byte = regnum*HLL_BITS/8; \
+    /*桶内的bit偏移*/unsigned long _fb = regnum*HLL_BITS&7; \
+    /*下个同需要移动的bit数*/unsigned long _fb8 = 8 - _fb; \
+    /*设置val*/unsigned long _v = val; \
+    /*字节位bit对应的位置需要清0，需要借助反码*/_p[_byte] &= ~(HLL_REGISTER_MAX << _fb); \
+    /*清零后或运算相加即可*/_p[_byte] |= _v << _fb; \
+    /*跨字节的，对应低位也先清零*/_p[_byte+1] &= ~(HLL_REGISTER_MAX >> _fb8); \
+    /*或运算价值*/_p[_byte+1] |= _v >> _fb8; \
 } while(0)
 
 /* Macros to access the sparse representation.
  * The macros parameter is expected to be an uint8_t pointer. */
-#define HLL_SPARSE_XZERO_BIT 0x40 /* 01xxxxxx */
-#define HLL_SPARSE_VAL_BIT 0x80 /* 1vvvvvxx */
-#define HLL_SPARSE_IS_ZERO(p) (((*(p)) & 0xc0) == 0) /* 00xxxxxx */
-#define HLL_SPARSE_IS_XZERO(p) (((*(p)) & 0xc0) == HLL_SPARSE_XZERO_BIT)
-#define HLL_SPARSE_IS_VAL(p) ((*(p)) & HLL_SPARSE_VAL_BIT)
-#define HLL_SPARSE_ZERO_LEN(p) (((*(p)) & 0x3f)+1)
-#define HLL_SPARSE_XZERO_LEN(p) (((((*(p)) & 0x3f) << 8) | (*((p)+1)))+1)
-#define HLL_SPARSE_VAL_VALUE(p) ((((*(p)) >> 2) & 0x1f)+1)
-#define HLL_SPARSE_VAL_LEN(p) (((*(p)) & 0x3)+1)
-#define HLL_SPARSE_VAL_MAX_VALUE 32
-#define HLL_SPARSE_VAL_MAX_LEN 4
-#define HLL_SPARSE_ZERO_MAX_LEN 64
-#define HLL_SPARSE_XZERO_MAX_LEN 16384
+#define HLL_SPARSE_XZERO_BIT 0x40 /* 16*4=64, 0100 0000，2^6, 有效6位*/
+#define HLL_SPARSE_VAL_BIT 0x80 /* 1000 0000 ，2^7=128，有效位7位*/
+#define HLL_SPARSE_IS_ZERO(p) (((*(p)) & 0xc0) == 0)/* 是稀疏存储zero部分，必定 00xx xxxx & 0100 0000 = 0*/
+#define HLL_SPARSE_IS_XZERO(p) (((*(p)) & 0xc0) == HLL_SPARSE_XZERO_BIT)/* 是xzero，因为起始字节xzero 01xxxxxx表示，必定 01xx xxxx & 0100 0000 = 0100 0000*/
+#define HLL_SPARSE_IS_VAL(p) ((*(p)) & HLL_SPARSE_VAL_BIT)/* 是val，1vvvvvxx & 1000 0000 =1 ,val必定是1，真*/
+#define HLL_SPARSE_ZERO_LEN(p) (((*(p)) & 0x3f)+1)/*00xxxxxx & 0011 1111 = zero有几个连续0，+1，得到真正的连续几个0桶*/
+#define HLL_SPARSE_XZERO_LEN(p) (((((*(p)) & 0x3f) << 8) | (*((p)+1)))+1)/*计算xzero有几个连续的0桶*/
+#define HLL_SPARSE_VAL_VALUE(p) ((((*(p)) >> 2) & 0x1f)+1)/*计算稀疏val的值大小 001vvvvvv & 00011111 = vvvvv值 再+1，最大是32*/
+#define HLL_SPARSE_VAL_LEN(p) (((*(p)) & 0x3)+1)/*计算稀疏存值的长度 1vvvvvvxx & 00000011 = xx 再+1，最大是4*/
+#define HLL_SPARSE_VAL_MAX_VALUE 32/*稀疏存储值最大32*/
+#define HLL_SPARSE_VAL_MAX_LEN 4/*稀疏存储不为0值连续最大4桶*/
+#define HLL_SPARSE_ZERO_MAX_LEN 64/*稀疏存储zero，最长63个0*/
+#define HLL_SPARSE_XZERO_MAX_LEN 16384/*稀疏存储xzero，最长16384个0*/
+/*
+ * 1vvvvvxx覆盖vvvvv部分操作
+ * 1、val-1，再左移2位
+ * 2、或 xx 相加
+ * 3、再或 加最高位 1
+ * */
 #define HLL_SPARSE_VAL_SET(p,val,len) do { \
     *(p) = (((val)-1)<<2|((len)-1))|HLL_SPARSE_VAL_BIT; \
 } while(0)
+/*
+ * 00xxxxxx
+ * len-1得到需要多少个0桶，p指针操作
+ * */
 #define HLL_SPARSE_ZERO_SET(p,len) do { \
     *(p) = (len)-1; \
 } while(0)
+/*
+ * 01xxxxxx yyyyyyyy = 128 = 01 000000 0111 1111
+ * len-1得到需要多少个0桶，len是大于64，len=128，len-1=127， 0111 1111
+ * 左移推低位，生成低字节8位 - 0000 0000 0111 1111
+ * 或计算p为，第一字节 加 0100 0000 -> 0000 0000  + 0100 0000 = 0100 0000
+ * p+1位,即第二字节位大小等于 = 长度&掩码255 - 0111 1111 & 1111 1111 = 0111 1111
+ * */
 #define HLL_SPARSE_XZERO_SET(p,len) do { \
     int _l = (len)-1; \
     *(p) = (_l>>8) | HLL_SPARSE_XZERO_BIT; \
@@ -393,6 +460,9 @@ static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected";
 /* Our hash function is MurmurHash2, 64 bit version.
  * It was modified for Redis in order to provide the same result in
  * big and little endian archs (endian neutral). */
+/*
+ * murmur hash算法求64bits的hash值
+ * */
 uint64_t MurmurHash64A (const void * key, int len, unsigned int seed) {
     const uint64_t m = 0xc6a4a7935bd1e995;
     const int r = 47;
@@ -463,18 +533,24 @@ int hllPatLen(unsigned char *ele, size_t elesize, long *regp) {
      *
      * This may sound like inefficient, but actually in the average case
      * there are high probabilities to find a 1 after a few iterations. */
+    //算hash 64
     hash = MurmurHash64A(ele,elesize,0xadc83b19ULL);
+    //算到桶的位置
     index = hash & HLL_P_MASK; /* Register index. */
+    //移除低位index部分，求导高位50位
     hash >>= HLL_P; /* Remove bits used to address the register. */
+    //补足50位
     hash |= ((uint64_t)1<<HLL_Q); /* Make sure the loop terminates
                                      and count will be <= Q+1. */
     bit = 1;
     count = 1; /* Initialized to 1 since we count the "00000...1" pattern. */
-    while((hash & bit) == 0) {
+    while((hash & bit) == 0) {//求1出现的位置，计算++
         count++;
         bit <<= 1;
     }
+    //桶pos 指针set
     *regp = (int) index;
+    //返回该桶计算count值
     return count;
 }
 
@@ -493,11 +569,15 @@ int hllPatLen(unsigned char *ele, size_t elesize, long *regp) {
 int hllDenseSet(uint8_t *registers, long index, uint8_t count) {
     uint8_t oldcount;
 
+    //第一步找到index下的寄存器位置，然后读取old count值
     HLL_DENSE_GET_REGISTER(oldcount,registers,index);
     if (count > oldcount) {
+        //更新值大于老的，紧凑set
         HLL_DENSE_SET_REGISTER(registers,index,count);
+        //success update
         return 1;
     } else {
+        //反正更新失败
         return 0;
     }
 }
@@ -509,29 +589,36 @@ int hllDenseSet(uint8_t *registers, long index, uint8_t count) {
  * This is just a wrapper to hllDenseSet(), performing the hashing of the
  * element in order to retrieve the index and zero-run count. */
 int hllDenseAdd(uint8_t *registers, unsigned char *ele, size_t elesize) {
+    //把某个元素add至hll，紧凑方式下
     long index;
+    //计算count值，同时index找到
     uint8_t count = hllPatLen(ele,elesize,&index);
     /* Update the register if this element produced a longer run of zeroes. */
+    //update
     return hllDenseSet(registers,index,count);
 }
 
 /* Compute the register histogram in the dense representation. */
+/*
+ * 统计dense下，每个桶内各值相等的个数 - count 直方图
+ * */
 void hllDenseRegHisto(uint8_t *registers, int* reghisto) {
     int j;
 
     /* Redis default is to use 16384 registers 6 bits each. The code works
      * with other values by modifying the defines, but for our target value
      * we take a faster path with unrolled loops. */
-    if (HLL_REGISTERS == 16384 && HLL_BITS == 6) {
+    if (HLL_REGISTERS == 16384 && HLL_BITS == 6) {//if check hll是16384个寄存器和每个register是6bit
         uint8_t *r = registers;
+        //16384/16=1024次，2^10，每次处理2^4，总共就是2^14，就是16384个桶
         unsigned long r0, r1, r2, r3, r4, r5, r6, r7, r8, r9,
                       r10, r11, r12, r13, r14, r15;
         for (j = 0; j < 1024; j++) {
             /* Handle 16 registers per iteration. */
-            r0 = r[0] & 63;
-            r1 = (r[0] >> 6 | r[1] << 2) & 63;
-            r2 = (r[1] >> 4 | r[2] << 4) & 63;
-            r3 = (r[2] >> 2) & 63;
+            r0 = r[0] & 63;// yyxx xxxx & 0011 1111 = 第一个register的count值
+            r1 = (r[0] >> 6 | r[1] << 2) & 63;//第二个register的count值
+            r2 = (r[1] >> 4 | r[2] << 4) & 63;//同理第三个
+            r3 = (r[2] >> 2) & 63;//同理第四个
             r4 = r[3] & 63;
             r5 = (r[3] >> 6 | r[4] << 2) & 63;
             r6 = (r[4] >> 4 | r[5] << 4) & 63;
@@ -545,6 +632,7 @@ void hllDenseRegHisto(uint8_t *registers, int* reghisto) {
             r14 = (r[10] >> 4 | r[11] << 4) & 63;
             r15 = (r[11] >> 2) & 63;
 
+            //对应的count直方统计
             reghisto[r0]++;
             reghisto[r1]++;
             reghisto[r2]++;
@@ -562,6 +650,7 @@ void hllDenseRegHisto(uint8_t *registers, int* reghisto) {
             reghisto[r14]++;
             reghisto[r15]++;
 
+            //每个桶count存储就是12字节，移动12字节，到下个桶，开始再次for统计，总共16个桶
             r += 12;
         }
     } else {
@@ -581,44 +670,70 @@ void hllDenseRegHisto(uint8_t *registers, int* reghisto) {
  *
  * The function returns C_OK if the sparse representation was valid,
  * otherwise C_ERR is returned if the representation was corrupted. */
+/*
+ * 稀疏存储要转为紧凑存储了
+ * */
 int hllSparseToDense(robj *o) {
+    //初始化变量，取到o的sds变量，理解为元素已sds形式存储在hll中
     sds sparse = o->ptr, dense;
     struct hllhdr *hdr, *oldhdr = (struct hllhdr*)sparse;
     int idx = 0, runlen, regval;
+    //sparse头指针，尾指针, sdslen函数计算sparse长度
     uint8_t *p = (uint8_t*)sparse, *end = p+sdslen(sparse);
 
     /* If the representation is already the right one return ASAP. */
     hdr = (struct hllhdr*) sparse;
+    //如果当前已经是dense，return
     if (hdr->encoding == HLL_DENSE) return C_OK;
 
     /* Create a string of the right size filled with zero bytes.
      * Note that the cached cardinality is set to 0 as a side effect
      * that is exactly the cardinality of an empty HLL. */
+    /*
+     * 创建一个新的 dense 模式的 hllhdr，并且把原有的稀疏模式magin 和cached 拷贝到新的结构里面
+把encoding 设置成新的dense模式，初始大小是dense大小
+     * */
     dense = sdsnewlen(NULL,HLL_DENSE_SIZE);
     hdr = (struct hllhdr*) dense;
+    //copy magic 和 cached 基数值
     *hdr = *oldhdr; /* This will copy the magic and cached cardinality. */
+    //set dense 方式，=0
     hdr->encoding = HLL_DENSE;
 
     /* Now read the sparse representation and set non-zero registers
      * accordingly. */
+    //获取寄存器指针
     p += HLL_HDR_SIZE;
     while(p < end) {
+        //从起始位置遍历 register
         if (HLL_SPARSE_IS_ZERO(p)) {
+            //zero区，求有几个连续0桶
             runlen = HLL_SPARSE_ZERO_LEN(p);
+            //idx累加
             idx += runlen;
+            //指针下移
             p++;
         } else if (HLL_SPARSE_IS_XZERO(p)) {
+            //x zero,求连续0桶大小
             runlen = HLL_SPARSE_XZERO_LEN(p);
             idx += runlen;
+            //指针下移2步，因为xzero是2个字节
             p += 2;
         } else {
+            //非0桶
+            //大小
             runlen = HLL_SPARSE_VAL_LEN(p);
+            //连续非零值
             regval = HLL_SPARSE_VAL_VALUE(p);
+            //溢出判断
             if ((runlen + idx) > HLL_REGISTERS) break; /* Overflow. */
             while(runlen--) {
+                //开始逐个转为密集存储，调用set方法
                 HLL_DENSE_SET_REGISTER(hdr->registers,idx,regval);
+                //idx++
                 idx++;
             }
+            //p++
             p++;
         }
     }
@@ -626,11 +741,13 @@ int hllSparseToDense(robj *o) {
     /* If the sparse representation was valid, we expect to find idx
      * set to HLL_REGISTERS. */
     if (idx != HLL_REGISTERS) {
+        //判断不是指定16384，error
         sdsfree(dense);
         return C_ERR;
     }
 
     /* Free the old representation and set the new one. */
+    //成功后free
     sdsfree(o->ptr);
     o->ptr = dense;
     return C_OK;
@@ -652,6 +769,7 @@ int hllSparseToDense(robj *o) {
  * not representable with the sparse representation, or when the resulting
  * size would be greater than server.hll_sparse_max_bytes. */
 int hllSparseSet(robj *o, long index, uint8_t count) {
+    //变量初始化
     struct hllhdr *hdr;
     uint8_t oldcount, *sparse, *end, *p, *prev, *next;
     long first, span;
@@ -659,6 +777,7 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
 
     /* If the count is too big to be representable by the sparse representation
      * switch to dense representation. */
+    //如果稀疏存储count大于了32，转为密集存储 - 超过稀疏存储最大值
     if (count > HLL_SPARSE_VAL_MAX_VALUE) goto promote;
 
     /* When updating a sparse representation, sometimes we may need to
@@ -666,16 +785,26 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
      * into XZERO-VAL-XZERO). Make sure there is enough space right now
      * so that the pointers we take during the execution of the function
      * will be valid all the time. */
+    //ptr是sds，sds扩容检查3个字节
+    //当X0转成了X0和Val，则比是3个字节
     o->ptr = sdsMakeRoomFor(o->ptr,3);
 
     /* Step 1: we need to locate the opcode we need to modify to check
      * if a value update is actually needed. */
+
+    /*
+     * 第一步找到位置
+     * */
+
+    //拿到hll 稀疏存储的偏移位置
     sparse = p = ((uint8_t*)o->ptr) + HLL_HDR_SIZE;
+    //end位置
     end = p + sdslen(o->ptr) - HLL_HDR_SIZE;
 
     first = 0;
     prev = NULL; /* Points to previous opcode at the end of the loop. */
     next = NULL; /* Points to the next opcode at the end of the loop. */
+    //定义跨度
     span = 0;
     while(p < end) {
         long oplen;
@@ -687,21 +816,27 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
          * least frequent opcode in many-bytes sparse HLLs is faster. */
         oplen = 1;
         if (HLL_SPARSE_IS_ZERO(p)) {
+            //zero区域，跨度是zero长度
             span = HLL_SPARSE_ZERO_LEN(p);
         } else if (HLL_SPARSE_IS_VAL(p)) {
+            //val区，span是有值的区间长度
             span = HLL_SPARSE_VAL_LEN(p);
         } else { /* XZERO. */
+            //xzero同理
             span = HLL_SPARSE_XZERO_LEN(p);
+            //2个字节
             oplen = 2;
         }
         /* Break if this opcode covers the register as 'index'. */
+        //要set的桶的位置，已经小于等于"起始"+跨度-1，break
         if (index <= first+span-1) break;
-        prev = p;
-        p += oplen;
-        first += span;
+        prev = p;//save p位置
+        p += oplen;//字节数+
+        first += span;//跨度+
     }
     if (span == 0 || p >= end) return -1; /* Invalid format. */
 
+    //判断p类型，xzero，则next移动2位，否则移1位
     next = HLL_SPARSE_IS_XZERO(p) ? p+2 : p+1;
     if (next >= end) next = NULL;
 
@@ -709,13 +844,13 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
      * again for something that will not change.
      * Also cache the run-length of the opcode. */
     if (HLL_SPARSE_IS_ZERO(p)) {
-        is_zero = 1;
+        is_zero = 1;//确认index添加位置是zero，计算len
         runlen = HLL_SPARSE_ZERO_LEN(p);
     } else if (HLL_SPARSE_IS_XZERO(p)) {
-        is_xzero = 1;
+        is_xzero = 1;//确认是xzero，计算len
         runlen = HLL_SPARSE_XZERO_LEN(p);
     } else {
-        is_val = 1;
+        is_val = 1;//确认是val，同理计算len
         runlen = HLL_SPARSE_VAL_LEN(p);
     }
 
@@ -741,13 +876,18 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
      *    register) and the value is less than 'count', we just update it
      *    since this is a trivial case. */
     if (is_val) {
+        //val去，读取old val
         oldcount = HLL_SPARSE_VAL_VALUE(p);
         /* Case A. */
+        //添加失败
         if (oldcount >= count) return 0;
 
         /* Case B. */
+        //如果val区长度1
         if (runlen == 1) {
+            //count更新set
             HLL_SPARSE_VAL_SET(p,count,1);
+            //可能有2个临近的val区，合并处理，节省内存
             goto updated;
         }
     }
@@ -755,6 +895,7 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
     /* C) Another trivial to handle case is a ZERO opcode with a len of 1.
      * We can just replace it with a VAL opcode with our value and len of 1. */
     if (is_zero && runlen == 1) {
+        //zero区，set，之后也可能出现合并
         HLL_SPARSE_VAL_SET(p,count,1);
         goto updated;
     }
@@ -829,7 +970,7 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
      int deltalen = seqlen-oldlen;
 
      if (deltalen > 0 &&
-         sdslen(o->ptr)+deltalen > server.hll_sparse_max_bytes) goto promote;
+         sdslen(o->ptr)+deltalen > server.hll_sparse_max_bytes) goto promote;/*如果稀疏存储已经大于hll_sparse_max_bytes配置，则转密集存储,默认3000bytes*/
      if (deltalen && next) memmove(next+deltalen,next,end-next);
      sdsIncrLen(o->ptr,deltalen);
      memcpy(p,seq,seqlen);
@@ -843,25 +984,25 @@ updated:
      * a single one. */
     p = prev ? prev : sparse;
     int scanlen = 5; /* Scan up to 5 upcodes starting from prev. */
-    while (p < end && scanlen--) {
+    while (p < end && scanlen--) {/*prev指针接下来5个 upcodes*/
         if (HLL_SPARSE_IS_XZERO(p)) {
-            p += 2;
+            p += 2;/*x0 skip*/
             continue;
         } else if (HLL_SPARSE_IS_ZERO(p)) {
             p++;
-            continue;
+            continue;/*0 skip*/
         }
         /* We need two adjacent VAL opcodes to try a merge, having
          * the same value, and a len that fits the VAL opcode max len. */
-        if (p+1 < end && HLL_SPARSE_IS_VAL(p+1)) {
-            int v1 = HLL_SPARSE_VAL_VALUE(p);
-            int v2 = HLL_SPARSE_VAL_VALUE(p+1);
+        if (p+1 < end && HLL_SPARSE_IS_VAL(p+1)) {/*p的下个区还是val*/
+            int v1 = HLL_SPARSE_VAL_VALUE(p);/*p的值*/
+            int v2 = HLL_SPARSE_VAL_VALUE(p+1);/*p+1的值*/
             if (v1 == v2) {
-                int len = HLL_SPARSE_VAL_LEN(p)+HLL_SPARSE_VAL_LEN(p+1);
-                if (len <= HLL_SPARSE_VAL_MAX_LEN) {
+                int len = HLL_SPARSE_VAL_LEN(p)+HLL_SPARSE_VAL_LEN(p+1);/*值等下，求len长度*/
+                if (len <= HLL_SPARSE_VAL_MAX_LEN) {/*如果不超过4，合并*/
                     HLL_SPARSE_VAL_SET(p+1,v1,len);
-                    memmove(p,p+1,end-p);
-                    sdsIncrLen(o->ptr,-1);
+                    memmove(p,p+1,end-p);/*copy move*/
+                    sdsIncrLen(o->ptr,-1);/*incr -1*/
                     end--;
                     /* After a merge we reiterate without incrementing 'p'
                      * in order to try to merge the just merged value with
@@ -870,11 +1011,12 @@ updated:
                 }
             }
         }
-        p++;
+        p++;/*p++*/
     }
 
     /* Invalidate the cached cardinality. */
     hdr = o->ptr;
+    /*失效缓存位值*/
     HLL_INVALIDATE_CACHE(hdr);
     return 1;
 
@@ -889,7 +1031,9 @@ promote: /* Promote to dense representation. */
      * Note that this in turn means that PFADD will make sure the command
      * is propagated to slaves / AOF, so if there is a sparse -> dense
      * conversion, it will be performed in all the slaves as well. */
+    //index位置上count转dense
     int dense_retval = hllDenseSet(hdr->registers,index,count);
+    //稀疏转密集，原来的值肯定比32小，此处dense set必定是成功
     serverAssert(dense_retval == 1);
     return dense_retval;
 }
@@ -1022,6 +1166,7 @@ uint64_t hllCount(struct hllhdr *hdr, int *invalid) {
     int reghisto[64] = {0};
 
     /* Compute register histogram */
+    //直方统计
     if (hdr->encoding == HLL_DENSE) {
         hllDenseRegHisto(hdr->registers,reghisto);
     } else if (hdr->encoding == HLL_SPARSE) {
@@ -1036,6 +1181,7 @@ uint64_t hllCount(struct hllhdr *hdr, int *invalid) {
     /* Estimate cardinality form register histogram. See:
      * "New cardinality estimation algorithms for HyperLogLog sketches"
      * Otmar Ertl, arXiv:1702.01284 */
+    //按照公式估算
     double z = m * hllTau((m-reghisto[HLL_Q+1])/(double)m);
     for (j = HLL_Q; j >= 1; --j) {
         z += reghisto[j];
@@ -1073,7 +1219,9 @@ int hllMerge(uint8_t *max, robj *hll) {
         uint8_t val;
 
         for (i = 0; i < HLL_REGISTERS; i++) {
+            //紧凑方式下，每个桶号下的count
             HLL_DENSE_GET_REGISTER(val,hdr->registers,i);
+            //跟踪最大值，因为需要merge
             if (val > max[i]) max[i] = val;
         }
     } else {
@@ -1111,11 +1259,16 @@ int hllMerge(uint8_t *max, robj *hll) {
 
 /* Create an HLL object. We always create the HLL using sparse encoding.
  * This will be upgraded to the dense representation as needed. */
+/*
+ * 创建1个hll，用redis obj封装
+ * */
 robj *createHLLObject(void) {
+    //初始化变量
     robj *o;
     struct hllhdr *hdr;
-    sds s;
+    sds s;//str key
     uint8_t *p;
+    //初始化稀疏存储字节大小=hll hdr大小+x0型 register大小
     int sparselen = HLL_HDR_SIZE +
                     (((HLL_REGISTERS+(HLL_SPARSE_XZERO_MAX_LEN-1)) /
                      HLL_SPARSE_XZERO_MAX_LEN)*2);
@@ -1123,19 +1276,26 @@ robj *createHLLObject(void) {
 
     /* Populate the sparse representation with as many XZERO opcodes as
      * needed to represent all the registers. */
+    //拿到16384个桶
     aux = HLL_REGISTERS;
+    //sds newlen，初始化内存
     s = sdsnewlen(NULL,sparselen);
+    //获取寄存器寻址index
     p = (uint8_t*)s + HLL_HDR_SIZE;
     while(aux) {
-        int xzero = HLL_SPARSE_XZERO_MAX_LEN;
-        if (xzero > aux) xzero = aux;
+        int xzero = HLL_SPARSE_XZERO_MAX_LEN;/*1个xzero最大的连续0的大小，最大允许是16384*/
+        if (xzero > aux) xzero = aux;/*x0型最大16384个0*/
+        //该双字节通过位运算为初始化连续16384个0
         HLL_SPARSE_XZERO_SET(p,xzero);
+        //p++2，xzero 初始占2个字节
         p += 2;
+        //计算已经分配过的桶数
         aux -= xzero;
     }
     serverAssert((p-(uint8_t*)s) == sparselen);
 
     /* Create the actual object. */
+    //创建redis obj，sds型
     o = createObject(OBJ_STRING,s);
     hdr = o->ptr;
     memcpy(hdr->magic,"HYLL",4);
@@ -1178,6 +1338,7 @@ invalid:
 
 /* PFADD var ele ele ele ... ele => :0 or :1 */
 void pfaddCommand(client *c) {
+    //惰性淘汰策略，根据key去db中查找redis obj，查找过程中有判断key是否expire并可清理，然后master aof和replication执行同步动作
     robj *o = lookupKeyWrite(c->db,c->argv[1]);
     struct hllhdr *hdr;
     int updated = 0, j;
@@ -1186,7 +1347,9 @@ void pfaddCommand(client *c) {
         /* Create the key with a string value of the exact length to
          * hold our HLL data structure. sdsnewlen() when NULL is passed
          * is guaranteed to return bytes initialized to zero. */
+        //db没有该key的对象，初始化hll obj
         o = createHLLObject();
+        //db add 新创建hll obj 键
         dbAdd(c->db,c->argv[1],o);
         updated++;
     } else {
@@ -1195,10 +1358,12 @@ void pfaddCommand(client *c) {
     }
     /* Perform the low level ADD operation for every element. */
     for (j = 2; j < c->argc; j++) {
+        //多个key add
         int retval = hllAdd(o, (unsigned char*)c->argv[j]->ptr,
                                sdslen(c->argv[j]->ptr));
         switch(retval) {
         case 1:
+            //hll add succ
             updated++;
             break;
         case -1:
@@ -1211,6 +1376,7 @@ void pfaddCommand(client *c) {
         signalModifiedKey(c,c->db,c->argv[1]);
         notifyKeyspaceEvent(NOTIFY_STRING,"pfadd",c->argv[1],c->db->id);
         server.dirty += updated;
+        //add 成功后清除hll的缓存值card
         HLL_INVALIDATE_CACHE(hdr);
     }
     addReply(c, updated ? shared.cone : shared.czero);
@@ -1227,6 +1393,7 @@ void pfcountCommand(client *c) {
      * When multiple keys are specified, PFCOUNT actually computes
      * the cardinality of the merge of the N HLLs specified. */
     if (c->argc > 2) {
+        //多个hll时，先merge
         uint8_t max[HLL_HDR_SIZE+HLL_REGISTERS], *registers;
         int j;
 
@@ -1255,6 +1422,7 @@ void pfcountCommand(client *c) {
     }
 
     /* Case 2: cardinality of the single HLL.
+     * 单个hll
      *
      * The user specified a single key. Either return the cached value
      * or compute one and update the cache. */

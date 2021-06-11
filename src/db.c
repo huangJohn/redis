@@ -182,7 +182,9 @@ robj *lookupKeyWriteOrReply(client *c, robj *key, robj *reply) {
  *
  * The program is aborted if the key already exists. */
 void dbAdd(redisDb *db, robj *key, robj *val) {
+    //copy key
     sds copy = sdsdup(key->ptr);
+    //db add
     int retval = dictAdd(db->dict, copy, val);
 
     serverAssertWithInfo(NULL,key,retval == DICT_OK);
@@ -1417,16 +1419,17 @@ void setExpire(client *c, redisDb *db, robj *key, long long when) {
 /* Return the expire time of the specified key, or -1 if no expire
  * is associated with this key (i.e. the key is non volatile) */
 long long getExpire(redisDb *db, robj *key) {
-    dictEntry *de;
+    dictEntry *de;/*初始化，找到key的expire时间*/
 
     /* No expire? return ASAP */
-    if (dictSize(db->expires) == 0 ||
+    if (dictSize(db->expires) == 0 ||//expire字典是空 or 或者没找到key的timeout时间，不存在=-1
        (de = dictFind(db->expires,key->ptr)) == NULL) return -1;
 
     /* The entry was found in the expire dict, this means it should also
      * be present in the main dict (safety check). */
+    //这里已经找到了de
     serverAssertWithInfo(NULL,key,dictFind(db->dict,key->ptr) != NULL);
-    return dictGetSignedIntegerVal(de);
+    return dictGetSignedIntegerVal(de);//返回expire时间
 }
 
 /* Propagate expires into slaves and the AOF file.
@@ -1440,11 +1443,12 @@ long long getExpire(redisDb *db, robj *key) {
 void propagateExpire(redisDb *db, robj *key, int lazy) {
     robj *argv[2];
 
-    argv[0] = lazy ? shared.unlink : shared.del;
+    argv[0] = lazy ? shared.unlink : shared.del;/*lazy free判断*/
     argv[1] = key;
     incrRefCount(argv[0]);
     incrRefCount(argv[1]);
 
+    //执行del or unlink命令
     propagate(server.delCommand,db->id,argv,2,PROPAGATE_AOF|PROPAGATE_REPL);
 
     decrRefCount(argv[0]);
@@ -1456,9 +1460,11 @@ int keyIsExpired(redisDb *db, robj *key) {
     mstime_t when = getExpire(db,key);
     mstime_t now;
 
+    //不需要过期，直接返回0
     if (when < 0) return 0; /* No expire for this key */
 
     /* Don't expire anything while loading. It will be done later. */
+    //服务端再加载启动，直接返回0
     if (server.loading) return 0;
 
     /* If we are in the context of a Lua script, we pretend that time is
@@ -1493,6 +1499,7 @@ int keyIsExpired(redisDb *db, robj *key) {
  * in a given key, but such key may be already logically expired even if
  * it still exists in the database. The main way this function is called
  * is via lookupKey*() family of functions.
+ * 服务端obj逻辑上已经过期了，但是db还没有过期，检查是否需要处理db过期
  *
  * The behavior of the function depends on the replication role of the
  * instance, because slave instances do not expire keys, they wait
@@ -1501,15 +1508,17 @@ int keyIsExpired(redisDb *db, robj *key) {
  * so that read commands executed in the slave side will be able to
  * behave like if the key is expired even if still present (because the
  * master has yet to propagate the DEL).
+ * 这个方法调用决定于备节点，因为备节点只能等待主节点命令执行db过期，备节点db上该key可能处于已经失效了，或者还是有效，同步有时延
  *
  * In masters as a side effect of finding a key which is expired, such
  * key will be evicted from the database. Also this may trigger the
  * propagation of a DEL/UNLINK command in AOF / replication stream.
+ * 在主节点中，执行该方法的结果就是db上key被删除，也许还可以触发同步命令，在aof和replication流中
  *
  * The return value of the function is 0 if the key is still valid,
  * otherwise the function returns 1 if the key is expired. */
 int expireIfNeeded(redisDb *db, robj *key) {
-    if (!keyIsExpired(db,key)) return 0;
+    if (!keyIsExpired(db,key)) return 0;/*如果redis上没找到key或者key没有过期，do nothing*/
 
     /* If we are running in the context of a slave, instead of
      * evicting the expired key from the database, we return ASAP:
@@ -1519,21 +1528,26 @@ int expireIfNeeded(redisDb *db, robj *key) {
      * Still we try to return the right information to the caller,
      * that is, 0 if we think the key should be still valid, 1 if
      * we think the key is expired at this time. */
+    /*执行expire清理工作应该有master主导，master存在时，master执行后再同步salve，salve不做任何，返回1*/
     if (server.masterhost != NULL) return 1;
 
     /* If clients are paused, we keep the current dataset constant,
      * but return to the client what we believe is the right state. Typically,
      * at the end of the pause we will properly expire the key OR we will
      * have failed over and the new primary will send us the expire. */
+    //暂停状态中不做
     if (checkClientPauseTimeoutAndReturnIfPaused()) return 1;
 
     /* Delete the key */
+    /*共享统计变量++*/
     server.stat_expiredkeys++;
+    /*传播命名del aof or replication*/
     propagateExpire(db,key,server.lazyfree_lazy_expire);
+    //时间通知key已经过期
     notifyKeyspaceEvent(NOTIFY_EXPIRED,
         "expired",key,db->id);
-    int retval = server.lazyfree_lazy_expire ? dbAsyncDelete(db,key) :
-                                               dbSyncDelete(db,key);
+    int retval = server.lazyfree_lazy_expire ? dbAsyncDelete(db,key) ://异步删除db key，大对象删除
+                                               dbSyncDelete(db,key);//同步执行
     if (retval) signalModifiedKey(NULL,db,key);
     return retval;
 }

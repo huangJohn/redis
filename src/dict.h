@@ -47,6 +47,9 @@
 /* Unused arguments generate annoying warnings... */
 #define DICT_NOTUSED(V) ((void) V)
 
+/*
+ * 定义map entry结构
+ * */
 typedef struct dictEntry {
     void *key;
     union {
@@ -55,9 +58,13 @@ typedef struct dictEntry {
         int64_t s64;
         double d;
     } v;
+    // 拉链发next指针
     struct dictEntry *next;
 } dictEntry;
 
+/*
+ * 定义map的函数
+ * */
 typedef struct dictType {
     uint64_t (*hashFunction)(const void *key);
     void *(*keyDup)(void *privdata, const void *key);
@@ -70,6 +77,9 @@ typedef struct dictType {
 
 /* This is our hash table structure. Every dictionary has two of this as we
  * implement incremental rehashing, for the old to the new table. */
+/*
+ * hash table 元素entry类型
+ * */
 typedef struct dictht {
     dictEntry **table;
     unsigned long size;
@@ -78,10 +88,12 @@ typedef struct dictht {
 } dictht;
 
 typedef struct dict {
-    dictType *type;
-    void *privdata;
-    dictht ht[2];
+    dictType *type;//定义dict 函数尅性
+    void *privdata;//私有数据
+    dictht ht[2];//容量2个大小的table数组
+    //rehash idx number
     long rehashidx; /* rehashing not in progress if rehashidx == -1 */
+    //rehash 暂停，则 pauserehash > 0
     int16_t pauserehash; /* If >0 rehashing is paused (<0 indicates coding error) */
 } dict;
 
@@ -89,6 +101,7 @@ typedef struct dict {
  * dictAdd, dictFind, and other functions against the dictionary even while
  * iterating. Otherwise it is a non safe iterator, and only dictNext()
  * should be called while iterating. */
+//mao迭代器，线程是1时，安全操作的
 typedef struct dictIterator {
     dict *d;
     long index;
@@ -102,9 +115,11 @@ typedef void (dictScanFunction)(void *privdata, const dictEntry *de);
 typedef void (dictScanBucketFunction)(void *privdata, dictEntry **bucketref);
 
 /* This is the initial size of every hash table */
+/*定义初始化hash table 大小=4*/
 #define DICT_HT_INITIAL_SIZE     4
 
 /* ------------------------------- Macros ------------------------------------*/
+//Macros api
 #define dictFreeVal(d, entry) \
     if ((d)->type->valDestructor) \
         (d)->type->valDestructor((d)->privdata, (entry)->v.val)
@@ -141,17 +156,17 @@ typedef void (dictScanBucketFunction)(void *privdata, dictEntry **bucketref);
         (d)->type->keyCompare((d)->privdata, key1, key2) : \
         (key1) == (key2))
 
-#define dictHashKey(d, key) (d)->type->hashFunction(key)
-#define dictGetKey(he) ((he)->key)
-#define dictGetVal(he) ((he)->v.val)
-#define dictGetSignedIntegerVal(he) ((he)->v.s64)
-#define dictGetUnsignedIntegerVal(he) ((he)->v.u64)
-#define dictGetDoubleVal(he) ((he)->v.d)
-#define dictSlots(d) ((d)->ht[0].size+(d)->ht[1].size)
-#define dictSize(d) ((d)->ht[0].used+(d)->ht[1].used)
-#define dictIsRehashing(d) ((d)->rehashidx != -1)
-#define dictPauseRehashing(d) (d)->pauserehash++
-#define dictResumeRehashing(d) (d)->pauserehash--
+#define dictHashKey(d, key) (d)->type->hashFunction(key)/*计算key的hash值*/
+#define dictGetKey(he) ((he)->key)/*get key*/
+#define dictGetVal(he) ((he)->v.val)/*get val*/
+#define dictGetSignedIntegerVal(he) ((he)->v.s64)/*get 有符号的int*/
+#define dictGetUnsignedIntegerVal(he) ((he)->v.u64)/*get 无符号的int*/
+#define dictGetDoubleVal(he) ((he)->v.d)/*get double*/
+#define dictSlots(d) ((d)->ht[0].size+(d)->ht[1].size)/*获取slots曹数，ht的总大小*/
+#define dictSize(d) ((d)->ht[0].used+(d)->ht[1].used)/*获取hst 已经使用的大小*/
+#define dictIsRehashing(d) ((d)->rehashidx != -1)/*判断是否正在rehashing*/
+#define dictPauseRehashing(d) (d)->pauserehash++/*暂停rehashing*/
+#define dictResumeRehashing(d) (d)->pauserehash--/*继续rehashing*/
 
 /* If our unsigned long type can store a 64 bit number, use a 64 bit PRNG. */
 #if ULONG_MAX >= 0xffffffffffffffff
@@ -161,7 +176,7 @@ typedef void (dictScanBucketFunction)(void *privdata, dictEntry **bucketref);
 #endif
 
 /* API */
-dict *dictCreate(dictType *type, void *privDataPtr);
+dict *dictCreate(dictType *type, void *privDataPtr);/*创建ht*/
 int dictExpand(dict *d, unsigned long size);
 int dictTryExpand(dict *d, unsigned long size);
 int dictAdd(dict *d, void *key, void *val);
